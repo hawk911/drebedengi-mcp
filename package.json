@@ -1,0 +1,28 @@
+{
+  "name": "drebedengi-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for drebedengi.ru (home bookkeeping) via its SOAP API",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node src/server.js --check",
+    "test": "node test/e2e.mjs",
+    "smoke": "node test/smoke-readonly.mjs"
+  },
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "fast-xml-parser": "^4.5.7",
+    "zod": "^3.25.76"
+  },
+  "bin": {
+    "drebedengi-mcp": "src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hawk911/drebedengi-mcp.git"
+  }
+}
