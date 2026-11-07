@@ -2,7 +2,7 @@
   "name": "drebedengi-mcp",
   "version": "1.0.0",
   "description": "MCP server for drebedengi.ru (home bookkeeping) via its SOAP API",
-  "license": "Unlicense",
+  "license": "MIT",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
