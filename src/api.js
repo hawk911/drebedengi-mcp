@@ -376,19 +376,26 @@ export class Drebedengi {
     await this.applyListFilters(p, opts);
     const raw = await this.call("getRecordList", [["params", p]]);
     let rows = (Array.isArray(raw) ? raw : Object.values(raw || {})).map((x) => this.enrich(x, r));
-    // A transfer/exchange comes back as two halves; keep the outgoing one (negative)
-    // unless filtered by account (then the matching half is what's relevant).
-    if (!opts.accounts?.length) {
-      const seen = new Set();
-      rows = rows.filter((x) => {
-        if (!x.paired_id) return true;
-        const key = [x.id, x.paired_id].sort().join("-");
-        if (seen.has(key)) return false;
-        const twin = rows.find((y) => y.id === x.paired_id);
-        if (twin && x.amount > 0 && twin.amount < 0) return false; // twin will represent it
-        seen.add(key);
-        return true;
-      });
+    // A transfer/exchange comes back as two halves. Merge them into one row: the outgoing
+    // (negative) half is the base, the incoming half's amount/currency/account are attached
+    // as to_amount / to_currency / to_account, so neither side is lost.
+    // With an account filter only the matching half may be present; it is kept as is.
+    {
+      const byId = new Map(rows.map((x) => [x.id, x]));
+      const drop = new Set();
+      for (const x of rows) {
+        if (!x.paired_id || drop.has(x.id)) continue;
+        const twin = byId.get(x.paired_id);
+        if (!twin || drop.has(twin.id)) continue;
+        const [out, inc] = x.amount < 0 ? [x, twin] : [twin, x];
+        out.to_amount = inc.amount;
+        out.to_currency = inc.currency;
+        out.to_account = inc.account;
+        if (out.type === "exchange") delete out.counter_account;
+        if (!out.comment && inc.comment) out.comment = inc.comment;
+        drop.add(inc.id);
+      }
+      rows = rows.filter((x) => !drop.has(x.id));
     }
     if (opts.search) {
       const q = norm(opts.search);

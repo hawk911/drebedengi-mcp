@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "MCP server for drebedengi.ru (home bookkeeping) via its SOAP API",
   "license": "MIT",
+  "author": "Denis B.",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
