@@ -433,7 +433,7 @@ export class Drebedengi {
       return {
         id: Number(x.budget_object_id),
         name: obj ? Drebedengi.path(obj, map) : x.name,
-        amount: fromCents(x.difference),
+        amount: Math.round(fromCents(x.difference) * 100) / 100,
         currency: this.currencyLabel(r, x.currency_id),
         is_leaf: isTrue(x.nochild),
         parent_id: Number(x.parent_id),
