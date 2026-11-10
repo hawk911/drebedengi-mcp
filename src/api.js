@@ -74,8 +74,16 @@ export function toApiDateTime(input) {
 }
 
 function checkDate(d, field) {
-  if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new DrebedengiError(`${field}: ожидается формат YYYY-MM-DD`);
+  if (!d) return;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  const t = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (!m || t.getUTCMonth() !== +m[2] - 1 || t.getUTCDate() !== +m[3]) {
+    throw new DrebedengiError(`${field}: ожидается существующая дата в формате YYYY-MM-DD, получено "${d}"`);
+  }
 }
+
+/** Currency code, or its name when the user's currency has no code. */
+const curLabel = (c) => c.code || c.name;
 
 let clientIdSeq = 0;
 /** client_id must be unique per insert (the server remembers client->server mapping). */
@@ -217,10 +225,20 @@ export class Drebedengi {
     }
   }
 
+  /** Ordinary accounts win; debt accounts ("Сергей", "Ozon банк") are tried when nothing else matches. */
   resolvePlace(v) {
-    return this.#resolveFresh("places", (r) =>
-      this.resolve(v, r.places.filter((p) => !isTrue(p.is_for_duty)), r.placeById, "Счёт/место хранения"),
-    );
+    return this.#resolveFresh("places", (r) => {
+      try {
+        return this.resolve(v, r.places.filter((p) => !isTrue(p.is_for_duty)), r.placeById, "Счёт/место хранения");
+      } catch (e) {
+        if (!e.notFound) throw e;
+        try {
+          return this.resolve(v, r.places.filter((p) => isTrue(p.is_for_duty)), r.placeById, "Долговой счёт");
+        } catch (e2) {
+          throw e2.notFound ? e : e2;
+        }
+      }
+    });
   }
   resolveCategory(v) {
     return this.#resolveFresh("categories", (r) => this.resolve(v, r.categories, r.categoryById, "Категория расходов"));
@@ -235,7 +253,7 @@ export class Drebedengi {
     return this.#resolveFresh("currencies", (r) => {
       if (v === undefined || v === null || v === "") return r.defaultCurrency;
       const s = String(v).trim();
-      const byCode = r.currencies.find((c) => String(c.code).toUpperCase() === s.toUpperCase());
+      const byCode = r.currencies.find((c) => c.code && String(c.code).toUpperCase() === s.toUpperCase());
       if (byCode) return byCode;
       return this.resolve(s, r.currencies, r.currencyById, "Валюта");
     });
@@ -243,7 +261,7 @@ export class Drebedengi {
 
   currencyLabel(r, id) {
     const c = r.currencyById.get(String(id));
-    return c ? c.code || c.name : String(id);
+    return c ? curLabel(c) : String(id);
   }
 
   // ---------------------------------------------------------------- reads
@@ -259,12 +277,16 @@ export class Drebedengi {
     const groups = new Map();
     for (const b of Array.isArray(rows) ? rows : Object.values(rows)) {
       const place = r.placeById.get(String(b.place_id));
-      if (!includeHidden && place && isTrue(place.is_hidden)) continue;
+      // A hidden account is skipped only while it is empty: money or a debt sitting on a
+      // hidden account must still show up, otherwise the totals are silently wrong.
+      const hidden = Boolean(place && isTrue(place.is_hidden));
+      if (!includeHidden && hidden && Number(b.sum) === 0) continue;
       const id = Number(b.place_id);
       if (!groups.has(id)) {
         groups.set(id, {
           account_id: id,
           account: place ? Drebedengi.path(place, r.placeById) : b.place_name,
+          hidden: hidden || undefined,
           balances: {},
           is_credit_card: isTrue(b.is_credit_card) || undefined,
           debt: isTrue(b.is_for_duty),
@@ -461,6 +483,9 @@ export class Drebedengi {
     const arr = Array.isArray(res) ? res : Object.values(res || {});
     const wanted = new Set(list.map((x) => x.client_id ?? x.server_id).map(String));
     const mine = arr.filter((x) => wanted.has(String(x.client_id ?? x.server_id)));
+    if (mine.length < list.length) {
+      throw new DrebedengiError(`Сервер не подтвердил запись (${mine.length} из ${list.length}): ${JSON.stringify(arr).slice(0, 300)}`);
+    }
     const bad = mine.filter((x) => x.status && !["inserted", "updated"].includes(String(x.status)));
     if (bad.length) throw new DrebedengiError(`Сервер отклонил запись: ${JSON.stringify(bad)}`);
     return mine.map((x) => ({ id: Number(x.server_id), status: x.status, client_id: x.client_id }));
@@ -502,7 +527,7 @@ export class Drebedengi {
       { ...base, client_id: id1, place_id: Number(from.id), budget_object_id: Number(to.id), sum: -cents },
       { ...base, client_id: nextClientId(), client_move_id: id1, place_id: Number(to.id), budget_object_id: Number(from.id), sum: cents },
     ]);
-    return { ids: res.map((x) => x.id), from: from.name, to: to.name, amount: Number(amount), currency: cur.code || cur.name, date: when };
+    return { ids: res.map((x) => x.id), from: from.name, to: to.name, amount: Number(amount), currency: curLabel(cur), date: when };
   }
 
   async addExchange({ fromAmount, fromCurrency, toAmount, toCurrency, account, toAccount, date, comment }) {
@@ -527,7 +552,7 @@ export class Drebedengi {
         currency_id: Number(c2.id),
       },
     ]);
-    return { ids: res.map((x) => x.id), sold: `${fromAmount} ${c1.code}`, bought: `${toAmount} ${c2.code}`, account: from.name, to_account: to.name, date: when };
+    return { ids: res.map((x) => x.id), sold: `${fromAmount} ${curLabel(c1)}`, bought: `${toAmount} ${curLabel(c2)}`, account: from.name, to_account: to.name, date: when };
   }
 
   async updateRecord(id, changes) {
@@ -549,6 +574,8 @@ export class Drebedengi {
       operation_type: type,
       is_duty: isTrue(rec.is_duty),
     };
+    // Keep the record inside its receipt group.
+    if (rec.group_id) out.group_id = Number(rec.group_id);
     if (changes.amount !== undefined) {
       if (!(Number(changes.amount) > 0)) throw new DrebedengiError("amount должен быть положительным числом");
       out.sum = type === OP.expense ? -toCents(changes.amount) : toCents(changes.amount);
@@ -577,13 +604,16 @@ export class Drebedengi {
   }
 
   async createObject(kind, { name, parent, description }) {
+    // "debt" is a debt account (a person or a bank you owe / who owes you): a place with is_for_duty.
+    const debt = kind === "debt";
+    if (debt) kind = "account";
     const method = { category: "setCategoryList", source: "setSourceList", account: "setPlaceList", tag: "setTagList" }[kind];
     if (!method) throw new DrebedengiError(`Неизвестный тип объекта ${kind}`);
     // Required fields per object type (the server rejects records without them).
     const rec = { client_id: nextClientId(), name, is_hidden: false, sort: 0 };
     if (kind === "category") Object.assign(rec, { type: 3, is_for_duty: false });
     if (kind === "source") Object.assign(rec, { type: 2, is_for_duty: false });
-    if (kind === "account") Object.assign(rec, { type: 4, is_for_duty: false, is_autohide: false, icon_id: 0 });
+    if (kind === "account") Object.assign(rec, { type: 4, is_for_duty: debt, is_autohide: false, icon_id: 0 });
     if (kind === "tag") rec.is_family = true;
     if (parent) {
       const p =
@@ -604,6 +634,6 @@ export class Drebedengi {
     const arr = Array.isArray(res) ? res : Object.values(res || {});
     const mine = arr.find((x) => String(x.client_id) === String(rec.client_id)) || arr[0];
     if (!mine?.server_id) throw new DrebedengiError(`Сервер не создал объект: ${JSON.stringify(arr)}`);
-    return { id: Number(mine.server_id), kind, name, status: mine.status, parent_id: rec.parent_id };
+    return { id: Number(mine.server_id), kind: debt ? "debt" : kind, name, status: mine.status, parent_id: rec.parent_id };
   }
 }

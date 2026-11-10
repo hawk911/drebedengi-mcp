@@ -51,6 +51,7 @@ const server = new McpServer(
     instructions:
       "Доступ к домашней бухгалтерии drebedengi.ru. Суммы — в единицах валюты (рубли, не копейки). " +
       "Счета (места хранения), категории, источники и теги можно указывать по id или по названию. " +
+      "Долговые счета (люди, банки) тоже можно указывать как счёт: перевод на долговой счёт = дал в долг / вернул долг. " +
       "Перед добавлением операции, если не уверен в названии категории/счёта, вызови list_categories / list_accounts. " +
       (readOnly ? "Сервер запущен в режиме только чтения." : "Перед удалением или изменением операций подтверждай действие у пользователя."),
   },
@@ -87,10 +88,11 @@ server.registerTool(
     title: "Остатки по счетам",
     description:
       "Текущие (или на дату) остатки по счетам — по каждой валюте счёта — и итоги по валютам. " +
-      "Долги (кто кому должен) возвращаются отдельным списком debts и в итоги счетов не входят.",
+      "Долги (кто кому должен) возвращаются отдельным списком debts и в итоги счетов не входят. " +
+      "Скрытые счета с ненулевым остатком показываются всегда (hidden: true).",
     inputSchema: {
       date: dateSchema.describe("Дата YYYY-MM-DD, на которую посчитать остатки (по умолчанию — сейчас)"),
-      include_hidden: z.boolean().optional().describe("Показывать скрытые счета"),
+      include_hidden: z.boolean().optional().describe("Показывать и пустые скрытые счета"),
       subtract_savings: z.boolean().optional().describe("Вычесть накопления"),
       subtract_debts: z.boolean().optional().describe("Вычесть долги"),
     },
@@ -118,17 +120,26 @@ server.registerTool(
   "list_accounts",
   {
     title: "Счета / места хранения",
-    description: "Список счетов (кошельки, карты, банки) с id. Остатки — через get_balance.",
-    inputSchema: { include_hidden: z.boolean().optional() },
+    description:
+      "Список счетов (кошельки, карты, банки) с id. С include_debts — ещё и долговые счета (люди и банки, кому должны вы или кто должен вам). " +
+      "Остатки — через get_balance.",
+    inputSchema: {
+      include_hidden: z.boolean().optional(),
+      include_debts: z.boolean().optional().describe("Показать и долговые счета (помечены debt: true)"),
+    },
     annotations: { readOnlyHint: true },
   },
   wrap(async (a) => {
     const r = await api().ref();
     return treeList(
-      r.places.filter((p) => p.is_for_duty !== "t"),
+      r.places.filter((p) => a.include_debts || p.is_for_duty !== "t"),
       r.placeById,
       a.include_hidden,
-      (o) => ({ credit_card: o.is_credit_card === "t" || undefined, description: o.description || undefined }),
+      (o) => ({
+        debt: o.is_for_duty === "t" || undefined,
+        credit_card: o.is_credit_card === "t" || undefined,
+        description: o.description || undefined,
+      }),
     );
   }),
 );
@@ -366,9 +377,10 @@ if (!readOnly) {
     "create_category",
     {
       title: "Создать категорию / источник / счёт / тег",
-      description: "Создать категорию расходов (kind=category), источник дохода (source), счёт (account) или тег (tag).",
+      description:
+        "Создать категорию расходов (kind=category), источник дохода (source), счёт (account), долговой счёт (debt) или тег (tag).",
       inputSchema: {
-        kind: z.enum(["category", "source", "account", "tag"]),
+        kind: z.enum(["category", "source", "account", "debt", "tag"]),
         name: z.string().min(1),
         parent: idOrName.optional().describe("Родитель (для вложенных категорий)"),
         description: z.string().optional(),

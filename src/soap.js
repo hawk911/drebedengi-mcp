@@ -9,6 +9,7 @@ const ENDPOINT = "https://www.drebedengi.ru/soap/";
 
 function esc(s) {
   return String(s)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "") // not allowed in XML 1.0
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -16,7 +17,7 @@ function esc(s) {
 }
 
 /** Serialise a JS value as a SOAP-encoded element named `name`. */
-function encode(name, v) {
+export function encode(name, v) {
   if (v === null || v === undefined) return `<${name} xsi:nil="true"/>`;
   if (typeof v === "boolean") return `<${name} xsi:type="xsd:boolean">${v}</${name}>`;
   if (typeof v === "number") {
@@ -47,10 +48,17 @@ const parser = new XMLParser({
   isArray: (name) => name === "item",
 });
 
+// The server returns text HTML-escaped (& < > only, quotes untouched). Undo it in a
+// single pass, otherwise every read-modify-write would escape the text once more.
+const ENTITIES = { amp: "&", lt: "<", gt: ">" };
+export function unescapeText(s) {
+  return typeof s === "string" && s.includes("&") ? s.replace(/&(amp|lt|gt);/g, (_, e) => ENTITIES[e]) : s;
+}
+
 /** Convert parsed SOAP-encoded node into plain JS. */
-function decode(node) {
+export function decode(node) {
   if (node === undefined || node === null) return null;
-  if (typeof node !== "object") return node;
+  if (typeof node !== "object") return unescapeText(node);
   if (node["@nil"] === "true") return null;
   const type = node["@type"] || "";
   const items = node.item;
@@ -75,7 +83,7 @@ function decode(node) {
   if (type.endsWith(":int") || type.endsWith(":integer") || type.endsWith(":long")) return Number(text);
   if (type.endsWith(":float") || type.endsWith(":double")) return Number(text);
   if (type.endsWith(":boolean")) return text === "true" || text === "1";
-  return text;
+  return unescapeText(text);
 }
 
 export class DrebedengiError extends Error {}
@@ -139,7 +147,7 @@ export class DrebedengiClient {
 
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-    let res;
+    let res, xml;
     try {
       res = await fetch(this.endpoint, {
         method: "POST",
@@ -150,12 +158,14 @@ export class DrebedengiClient {
         body,
         signal: ctrl.signal,
       });
+      // The timeout also covers reading the body: a stalled response must not block the queue.
+      xml = await res.text();
     } catch (e) {
-      throw new DrebedengiError(`Сетевая ошибка при вызове ${method}: ${e.message}`);
+      const why = ctrl.signal.aborted ? `таймаут ${Math.round(this.timeoutMs / 1000)} с` : e.message;
+      throw new DrebedengiError(`Сетевая ошибка при вызове ${method}: ${why}`);
     } finally {
       clearTimeout(timer);
     }
-    const xml = await res.text();
     let doc;
     try {
       doc = parser.parse(xml);

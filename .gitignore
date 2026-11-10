@@ -1,3 +1,4 @@
 node_modules/
 .env
 .mcp.json
+categorize-rules.md
